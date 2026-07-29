@@ -25,7 +25,7 @@ export default function App() {
     formData.append('document', file);
 
     try {
-      const response = await fetch('https://ai-document-search-backend.onrender.com/api/upload', {
+      const response = await fetch('https://ai-document-search-backend-4o3e.onrender.com/api/upload', {
         method: 'POST',
         body: formData,
       });
@@ -57,7 +57,7 @@ export default function App() {
     setSearchAttempted(true);
 
     try {
-      const response = await fetch('https://ai-document-search-backend.onrender.com/api/search', {
+      const response = await fetch('https://ai-document-search-backend-4o3e.onrender.com/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query }),
