@@ -2,38 +2,37 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const { createClient } = require('@supabase/supabase-js');
 const axios = require('axios');
+const sqlite3 = require('sqlite3').verbose();
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const hfToken = process.env.HUGGINGFACE_TOKEN;
+const database = new sqlite3.Database(
+  process.env.DATABASE_PATH || path.join(__dirname, 'documents.sqlite')
+);
 
-// Enable CORS for frontend requests
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
-
 app.use(express.json());
 
-// Initialize Supabase Client
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_KEY;
-const hfToken = process.env.HUGGINGFACE_TOKEN;
+database.run(`
+  CREATE TABLE IF NOT EXISTS documents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    embedding TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )
+`);
 
-if (!supabaseUrl || !supabaseKey) {
-  console.error("Missing Supabase credentials in environment variables.");
-}
-
-const supabase = createClient(supabaseUrl, supabaseKey);
-
-// Multer setup for handling text/markdown uploads in memory
 const upload = multer({ storage: multer.memoryStorage() });
 
-// --- Helper Functions ---
-
-// 1. Generate 384-dimensional embeddings via Hugging Face Inference API
 async function getEmbedding(text) {
   try {
     const response = await axios.post(
@@ -53,7 +52,6 @@ async function getEmbedding(text) {
   }
 }
 
-// 2. Simple text chunking with overlap
 function chunkText(text, chunkSize = 500, overlap = 100) {
   const chunks = [];
   let index = 0;
@@ -63,40 +61,71 @@ function chunkText(text, chunkSize = 500, overlap = 100) {
     if (chunk.trim().length > 0) {
       chunks.push(chunk.trim());
     }
-    index += (chunkSize - overlap);
+    index += chunkSize - overlap;
   }
 
   return chunks;
 }
 
-// --- Routes ---
+function cosineSimilarity(left, right) {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+    throw new Error('Embedding dimensions do not match.');
+  }
 
-// 🟢 1. HEALTH CHECK & KEEP-ALIVE ROUTE (Pings Supabase to prevent pausing)
-app.get('/api/health', async (req, res) => {
-  try {
-    // Queries Supabase count to reset the 7-day inactivity timer
-    const { count, error } = await supabase
-      .from('documents')
-      .select('*', { count: 'exact', head: true });
+  let dotProduct = 0;
+  let leftMagnitude = 0;
+  let rightMagnitude = 0;
 
-    if (error) throw error;
+  for (let index = 0; index < left.length; index += 1) {
+    dotProduct += left[index] * right[index];
+    leftMagnitude += left[index] ** 2;
+    rightMagnitude += right[index] ** 2;
+  }
+
+  if (leftMagnitude === 0 || rightMagnitude === 0) {
+    return 0;
+  }
+
+  return dotProduct / (Math.sqrt(leftMagnitude) * Math.sqrt(rightMagnitude));
+}
+
+function runInsert(records) {
+  return new Promise((resolve, reject) => {
+    database.serialize(() => {
+      const statement = database.prepare(
+        'INSERT INTO documents (filename, chunk_index, content, embedding) VALUES (?, ?, ?, ?)'
+      );
+
+      for (const record of records) {
+        statement.run(
+          record.filename,
+          record.chunkIndex,
+          record.content,
+          JSON.stringify(record.embedding)
+        );
+      }
+
+      statement.finalize((error) => (error ? reject(error) : resolve()));
+    });
+  });
+}
+
+app.get('/api/health', (req, res) => {
+  database.get('SELECT COUNT(*) AS count FROM documents', (error, row) => {
+    if (error) {
+      console.error('Health check database query error:', error.message);
+      return res.status(500).json({ status: 'unhealthy', error: error.message });
+    }
 
     res.status(200).json({
       status: 'healthy',
-      message: 'Server is live and Supabase DB pinged successfully!',
-      documentCount: count ?? 0
+      message: 'Server is live and local SQLite database is ready.',
+      documentCount: row.count
     });
-  } catch (err) {
-    console.error('Health check database query error:', err.message);
-    res.status(500).json({
-      status: 'unhealthy',
-      error: err.message
-    });
-  }
+  });
 });
 
-// 📤 2. UPLOAD & INGEST DOCUMENT
-app.post('/api/upload', upload.single('file'), async (req, res) => {
+app.post('/api/upload', upload.single('document'), async (req, res) => {
   try {
     let rawText = '';
 
@@ -109,25 +138,24 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     }
 
     const chunks = chunkText(rawText);
+    const filename = req.file?.originalname || 'text-input';
     const records = [];
 
-    for (const chunk of chunks) {
-      const embedding = await getEmbedding(chunk);
+    for (const [chunkIndex, chunk] of chunks.entries()) {
       records.push({
+        filename,
+        chunkIndex,
         content: chunk,
-        embedding: embedding
+        embedding: await getEmbedding(chunk)
       });
     }
 
-    const { data, error } = await supabase
-      .from('documents')
-      .insert(records);
-
-    if (error) throw error;
+    await runInsert(records);
 
     res.status(200).json({
+      status: 'success',
       message: `Document processed and ${chunks.length} chunks indexed successfully!`,
-      chunksCount: chunks.length
+      totalChunksStored: chunks.length
     });
   } catch (error) {
     console.error('Upload Error:', error);
@@ -135,7 +163,6 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
   }
 });
 
-// 🔍 3. VECTOR SEARCH ROUTE
 app.post('/api/search', async (req, res) => {
   try {
     const { query } = req.body;
@@ -144,31 +171,37 @@ app.post('/api/search', async (req, res) => {
       return res.status(400).json({ error: 'Search query is required.' });
     }
 
-    // 1. Embed user search query
     const queryEmbedding = await getEmbedding(query);
-
-    // 2. Query Supabase using pgvector similarity function
-    const { data: documents, error } = await supabase.rpc('match_documents', {
-      query_embedding: queryEmbedding,
-      match_threshold: 0.2, // Returns relevant matches
-      match_count: 5
+    const queryVector = Array.isArray(queryEmbedding[0]) ? queryEmbedding[0] : queryEmbedding;
+    const documents = await new Promise((resolve, reject) => {
+      database.all(
+        'SELECT filename, chunk_index, content, embedding FROM documents',
+        (error, rows) => (error ? reject(error) : resolve(rows))
+      );
     });
 
-    if (error) throw error;
+    const matches = documents
+      .map((document) => ({
+        filename: document.filename,
+        chunk_index: document.chunk_index,
+        content: document.content,
+        similarity: cosineSimilarity(queryVector, JSON.parse(document.embedding))
+      }))
+      .filter((document) => document.similarity > 0.2)
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, 5);
 
-    res.status(200).json({ results: documents || [] });
+    res.status(200).json({ status: 'success', matches });
   } catch (error) {
     console.error('Search Error:', error);
     res.status(500).json({ error: error.message || 'Error executing search.' });
   }
 });
 
-// Default root route
 app.get('/', (req, res) => {
   res.send('AI Document Search Backend is running.');
 });
 
-// Start Server
 app.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 });

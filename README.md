@@ -91,3 +91,15 @@ npm run dev
 Frontend: http://localhost:5173
 
 Backend: http://localhost:5000
+
+### 7. Deploy the Backend to Render
+
+The repository includes a `render.yaml` Blueprint configuration. In Render, choose **New > Blueprint** and connect this repository. Render will use the configured `npm install` build command and `npm start` production command.
+
+Set the `HUGGINGFACE_TOKEN` environment variable when prompted. After deployment, copy the Render service URL into the Vercel frontend project as:
+
+```text
+VITE_API_URL=https://your-render-service.onrender.com
+```
+
+Then redeploy the Vercel frontend.

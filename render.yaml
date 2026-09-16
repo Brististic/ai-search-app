@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: ai-document-search-backend
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: HUGGINGFACE_TOKEN
+        sync: false
+      - key: DATABASE_PATH
+        value: /opt/render/project/src/server/documents.sqlite

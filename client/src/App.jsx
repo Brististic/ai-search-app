@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { Upload, Search, FileText, CheckCircle, AlertCircle, Loader2, Sparkles } from 'lucide-react';
 
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+
 export default function App() {
   // File Upload State
   const [file, setFile] = useState(null);
@@ -25,7 +27,7 @@ export default function App() {
     formData.append('document', file);
 
     try {
-      const response = await fetch('https://ai-document-search-backend-4o3e.onrender.com/api/upload', {
+      const response = await fetch(`${API_BASE_URL}/api/upload`, {
         method: 'POST',
         body: formData,
       });
@@ -35,7 +37,7 @@ export default function App() {
       if (data.status === 'success') {
         setUploadMessage({
           type: 'success',
-          text: `Stored ${data.totalChunksStored} vector chunk(s) from "${file.name}" into Supabase!`,
+          text: `Stored ${data.totalChunksStored} vector chunk(s) from "${file.name}" into SQLite!`,
         });
         setFile(null);
       } else {
@@ -57,7 +59,7 @@ export default function App() {
     setSearchAttempted(true);
 
     try {
-      const response = await fetch('https://ai-document-search-backend-4o3e.onrender.com/api/search', {
+      const response = await fetch(`${API_BASE_URL}/api/search`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query }),
