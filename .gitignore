@@ -6,3 +6,4 @@ uploads/*
 !uploads/.gitkeep
 client/dist/
 server/documents.json
+server/documents.sqlite
