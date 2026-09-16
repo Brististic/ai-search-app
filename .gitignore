@@ -5,4 +5,4 @@ client/node_modules/
 uploads/*
 !uploads/.gitkeep
 client/dist/
-server/documents.sqlite
+server/documents.json

@@ -94,7 +94,7 @@ Backend: http://localhost:5000
 
 ### 7. Deploy the Backend to Render
 
-The repository includes a `render.yaml` Blueprint configuration. In Render, choose **New > Blueprint** and connect this repository. Render will use the configured `npm install` build command and `npm start` production command.
+The repository includes a `render.yaml` Blueprint configuration. In Render, choose **New > Blueprint** and connect this repository. Render will use the configured `npm install` build command and `npm start` production command. Documents are stored in a local JSON file so the backend does not require native database binaries.
 
 Set the `HUGGINGFACE_TOKEN` environment variable when prompted. After deployment, copy the Render service URL into the Vercel frontend project as:
 

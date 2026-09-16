@@ -3,15 +3,13 @@ const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
 const axios = require('axios');
-const sqlite3 = require('sqlite3').verbose();
+const fs = require('fs');
 const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 const hfToken = process.env.HUGGINGFACE_TOKEN;
-const database = new sqlite3.Database(
-  process.env.DATABASE_PATH || path.join(__dirname, 'documents.sqlite')
-);
+const databasePath = process.env.DATABASE_PATH || path.join(__dirname, 'documents.json');
 
 app.use(cors({
   origin: '*',
@@ -20,18 +18,22 @@ app.use(cors({
 }));
 app.use(express.json());
 
-database.run(`
-  CREATE TABLE IF NOT EXISTS documents (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    filename TEXT NOT NULL,
-    chunk_index INTEGER NOT NULL,
-    content TEXT NOT NULL,
-    embedding TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  )
-`);
-
 const upload = multer({ storage: multer.memoryStorage() });
+
+function readDocuments() {
+  try {
+    return JSON.parse(fs.readFileSync(databasePath, 'utf8'));
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return [];
+    }
+    throw error;
+  }
+}
+
+function writeDocuments(documents) {
+  fs.writeFileSync(databasePath, JSON.stringify(documents), 'utf8');
+}
 
 async function getEmbedding(text) {
   try {
@@ -89,40 +91,18 @@ function cosineSimilarity(left, right) {
   return dotProduct / (Math.sqrt(leftMagnitude) * Math.sqrt(rightMagnitude));
 }
 
-function runInsert(records) {
-  return new Promise((resolve, reject) => {
-    database.serialize(() => {
-      const statement = database.prepare(
-        'INSERT INTO documents (filename, chunk_index, content, embedding) VALUES (?, ?, ?, ?)'
-      );
-
-      for (const record of records) {
-        statement.run(
-          record.filename,
-          record.chunkIndex,
-          record.content,
-          JSON.stringify(record.embedding)
-        );
-      }
-
-      statement.finalize((error) => (error ? reject(error) : resolve()));
-    });
-  });
-}
-
 app.get('/api/health', (req, res) => {
-  database.get('SELECT COUNT(*) AS count FROM documents', (error, row) => {
-    if (error) {
-      console.error('Health check database query error:', error.message);
-      return res.status(500).json({ status: 'unhealthy', error: error.message });
-    }
-
+  try {
+    const documents = readDocuments();
     res.status(200).json({
       status: 'healthy',
-      message: 'Server is live and local SQLite database is ready.',
-      documentCount: row.count
+      message: 'Server is live and local JSON database is ready.',
+      documentCount: documents.length
     });
-  });
+  } catch (error) {
+    console.error('Health check database query error:', error.message);
+    res.status(500).json({ status: 'unhealthy', error: error.message });
+  }
 });
 
 app.post('/api/upload', upload.single('document'), async (req, res) => {
@@ -150,7 +130,8 @@ app.post('/api/upload', upload.single('document'), async (req, res) => {
       });
     }
 
-    await runInsert(records);
+    const documents = readDocuments();
+    writeDocuments(documents.concat(records));
 
     res.status(200).json({
       status: 'success',
@@ -173,19 +154,14 @@ app.post('/api/search', async (req, res) => {
 
     const queryEmbedding = await getEmbedding(query);
     const queryVector = Array.isArray(queryEmbedding[0]) ? queryEmbedding[0] : queryEmbedding;
-    const documents = await new Promise((resolve, reject) => {
-      database.all(
-        'SELECT filename, chunk_index, content, embedding FROM documents',
-        (error, rows) => (error ? reject(error) : resolve(rows))
-      );
-    });
+    const documents = readDocuments();
 
     const matches = documents
       .map((document) => ({
         filename: document.filename,
         chunk_index: document.chunk_index,
         content: document.content,
-        similarity: cosineSimilarity(queryVector, JSON.parse(document.embedding))
+        similarity: cosineSimilarity(queryVector, document.embedding)
       }))
       .filter((document) => document.similarity > 0.2)
       .sort((a, b) => b.similarity - a.similarity)
